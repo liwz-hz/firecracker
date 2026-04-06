@@ -17,3 +17,12 @@ tags
 /resources/linux
 /resources/x86_64
 /resources/aarch64
+
+# Demo large binary files (keep scripts and docs)
+demo/*.img
+demo/*.tar.gz
+demo/vmlinux-ci
+demo/release-*/
+demo/vm_config.json
+*.deb
+vmlinux-*-full
