@@ -219,10 +219,13 @@ docker pull public.ecr.aws/firecracker/fcuvm:v88
 
 ### 3.2 创建缓存镜像
 
+**重要**：如果主机设置了代理（如 `http_proxy=http://127.0.0.1:7897`），必须在创建缓存镜像时清除代理环境变量，否则代理配置会被永久保存到镜像中，导致后续构建失败。
+
 首次构建后，将容器状态保存为新镜像：
 
 ```bash
 # 1. 首次构建（会下载所有 cargo 依赖）
+# 注意：使用 -e 显式清除镜像中可能存在的代理 ENV 变量
 docker run -d --name fc-build \
     --privileged \
     --workdir /firecracker \
@@ -233,8 +236,14 @@ docker run -d --name fc-build \
     --tmpfs /srv:exec,dev,size=32G \
     -v /boot:/boot \
     --env PYTHONDONTWRITEBYTECODE=1 \
+    --env http_proxy= \
+    --env https_proxy= \
+    --env HTTP_PROXY= \
+    --env HTTPS_PROXY= \
+    --env all_proxy= \
+    --env ALL_PROXY= \
     public.ecr.aws/firecracker/fcuvm:v88 \
-    bash -c "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY && ./tools/release.sh --libc musl --profile release"
+    bash -c "./tools/release.sh --libc musl --profile release"
 
 # 2. 等待构建完成
 docker logs -f fc-build
@@ -246,12 +255,15 @@ docker commit fc-build firecracker-build:v88-cached
 docker rm fc-build
 ```
 
+**说明**：`--env http_proxy=` 参数会覆盖镜像中的 `http_proxy` ENV 变量为空值，确保 docker commit 后镜像不包含代理配置。
+
 ### 3.3 使用缓存镜像构建
 
 后续构建直接使用缓存镜像：
 
 ```bash
 # 使用缓存镜像构建（约 5 分钟）
+# 建议也添加 -e 清除代理，以防缓存镜像意外包含代理配置
 docker run -d --name fc-build \
     --privileged \
     --workdir /firecracker \
@@ -262,8 +274,14 @@ docker run -d --name fc-build \
     --tmpfs /srv:exec,dev,size=32G \
     -v /boot:/boot \
     --env PYTHONDONTWRITEBYTECODE=1 \
+    --env http_proxy= \
+    --env https_proxy= \
+    --env HTTP_PROXY= \
+    --env HTTPS_PROXY= \
+    --env all_proxy= \
+    --env ALL_PROXY= \
     firecracker-build:v88-cached \
-    bash -c "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY && ./tools/release.sh --libc musl --profile release"
+    bash -c "./tools/release.sh --libc musl --profile release"
 
 # 查看构建日志
 docker logs -f fc-build
