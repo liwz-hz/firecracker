@@ -18,11 +18,9 @@ tags
 /resources/x86_64
 /resources/aarch64
 
-# Demo large binary files (keep scripts and docs)
-demo/*.img
-demo/*.tar.gz
+# Demo large binary files (keep scripts, docs, and rootfs)
 demo/vmlinux-ci
+demo/vmlinux-ci.debug
 demo/release-*/
 demo/vm_config.json
-*.deb
 vmlinux-*-full
