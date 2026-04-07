@@ -4,12 +4,43 @@
 
 ## 目录
 
-1. [背景知识](#背景知识)
-2. [前置要求](#前置要求)
-3. [准备工作](#准备工作)
-4. [步骤详解](#步骤详解)
-5. [运行验证](#运行验证)
-6. [问题排查](#问题排查)
+1. [快速启动（推荐）](#快速启动推荐)
+2. [背景知识](#背景知识)
+3. [前置要求](#前置要求)
+4. [准备工作](#准备工作)
+5. [步骤详解](#步骤详解)
+6. [运行验证](#运行验证)
+7. [问题排查](#问题排查)
+
+---
+
+## 快速启动（推荐）
+
+**好消息：仓库已包含运行 demo 所需的大部分文件！**
+
+本仓库 `demo/` 目录已包含：
+- ✅ `vmlinux-ci` - Firecracker CI 内核（28MB）
+- ✅ `alpine-rootfs.img` - Alpine rootfs 镜像（16MB）
+- ✅ `start_microvm.sh` - 启动脚本
+
+**你只需要下载 Firecracker 二进制（约 1MB）：**
+
+```bash
+cd demo
+
+# 下载 Firecracker v1.10.0
+ARCH="x86_64"
+VERSION="v1.10.0"
+curl -L https://github.com/firecracker-microvm/firecracker/releases/download/${VERSION}/firecracker-${VERSION}-${ARCH}.tgz | tar -xz
+
+# 重命名目录
+mv release-${VERSION}-${ARCH} release-${VERSION}-${ARCH}
+
+# 启动 microVM
+./start_microvm.sh
+```
+
+看到 `~ #` 提示符即可进入 VM shell 交互！
 
 ---
 
@@ -77,11 +108,14 @@ cd demo
 
 我们将使用以下文件：
 
-| 文件 | 来源 | 用途 |
-|------|------|------|
-| `firecracker` | 官方 release | VMM 二进制程序 |
-| `vmlinux-ci` | Firecracker CI | 专为 microVM 编译的内核 |
-| `alpine-rootfs.tar.gz` | Alpine 官方 | 最小化 Linux rootfs |
+| 文件 | 来源 | 用途 | 仓库包含 |
+|------|------|------|---------|
+| `firecracker` | 官方 release | VMM 二进制程序 | ❌ 需下载 |
+| `vmlinux-ci` | Firecracker CI | 专为 microVM 编译的内核 | ✅ 已包含 |
+| `alpine-rootfs.img` | 本仓库 | Alpine rootfs 镜像 | ✅ 已包含 |
+| `start_microvm.sh` | 本仓库 | 启动脚本 | ✅ 已包含 |
+
+**只需下载 Firecracker 二进制，其他文件已准备就绪！**
 
 ---
 
@@ -123,6 +157,10 @@ mv release-${latest}-${ARCH} release-${latest}-${ARCH}
 ---
 
 ### 步骤 2：获取正确的内核镜像
+
+> **✅ 已包含在仓库！** `demo/vmlinux-ci` 文件已存在，可直接跳过此步骤。
+> 
+> 如需使用其他版本内核，请参考下方说明。
 
 **这是关键步骤！普通内核无法在 Firecracker 中启动。**
 
@@ -185,6 +223,10 @@ ls -lh vmlinux-ci
 ---
 
 ### 步骤 3：准备 rootfs（根文件系统）
+
+> **✅ 已包含在仓库！** `demo/alpine-rootfs.img` 文件已存在，可直接跳过此步骤。
+> 
+> 如需自定义 rootfs（如添加软件包），请参考下方说明。
 
 #### 什么是 rootfs？
 
@@ -450,17 +492,17 @@ rm -f alpine-rootfs.img vm_config.json
 
 | 文件 | 大小 | 说明 |
 |------|------|------|
-| `release-*/` | ~1MB | Firecracker 二进制 |
-| `vmlinux-ci` | ~42MB | CI 内核（可复用） |
-| `alpine-rootfs.tar.gz` | ~3MB | Alpine rootfs 源文件 |
-
-每次启动只需重新执行步骤 3（创建 rootfs）和步骤 4-5（配置启动）。
+| `release-*/` | ~1MB | Firecracker 二进制（需下载） |
+| `vmlinux-ci` | ~28MB | CI 内核（仓库已包含） |
+| `alpine-rootfs.img` | ~16MB | rootfs 镜像（仓库已包含） |
 
 ---
 
 ## 附录：完整复现脚本
 
-以下是完整的复现脚本，保存为 `setup_and_run.sh`：
+### 简化版（仓库已有内核和 rootfs）
+
+以下是简化版脚本，只需下载 Firecracker 二进制：
 
 ```bash
 #!/bin/bash
@@ -470,30 +512,20 @@ echo "=== Firecracker MicroVM 快速启动 ==="
 
 cd /home/lmm/github_test/firecracker/demo
 
-# 步骤 3：创建 rootfs
-echo "1. 创建 rootfs..."
-if [ ! -f alpine-rootfs.img ]; then
-    mkdir -p /tmp/rootfs-content
-    tar -xzf alpine-rootfs.tar.gz -C /tmp/rootfs-content
-    
-    cat > /tmp/rootfs-content/init << 'EOF'
-#!/bin/sh
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
-echo "=== Firecracker MicroVM 启动成功 ==="
-echo "Alpine Linux microVM"
-exec /bin/sh
-EOF
-    chmod +x /tmp/rootfs-content/init
-    
-    mke2fs -t ext4 -d /tmp/rootfs-content -L rootfs alpine-rootfs.img 128M
-    echo "   ✓ rootfs 已创建"
+# 步骤 1：下载 Firecracker（如果不存在）
+echo "1. 检查 Firecracker..."
+if [ ! -d release-v1.10.0-x86_64 ]; then
+    echo "   下载 Firecracker v1.10.0..."
+    ARCH="x86_64"
+    VERSION="v1.10.0"
+    curl -L https://github.com/firecracker-microvm/firecracker/releases/download/${VERSION}/firecracker-${VERSION}-${ARCH}.tgz | tar -xz
+    mv release-${VERSION}-${ARCH} release-${VERSION}-${ARCH}
+    echo "   ✓ Firecracker 已下载"
 else
-    echo "   ✓ rootfs 已存在，跳过"
+    echo "   ✓ Firecracker 已存在，跳过"
 fi
 
-# 步骤 4：创建配置
+# 步骤 2：创建配置
 echo "2. 创建配置文件..."
 cat > vm_config.json << 'EOF'
 {
@@ -515,7 +547,7 @@ cat > vm_config.json << 'EOF'
 EOF
 echo "   ✓ 配置已创建"
 
-# 步骤 5：启动
+# 步骤 3：启动
 echo "3. 启动 Firecracker..."
 rm -f /tmp/fc.sock
 echo "   输出如下："
@@ -547,4 +579,19 @@ chmod +x setup_and_run.sh
 3. **正确的启动参数**：`console=ttyS0` + `init=/init`
 4. **KVM 权限**：确保可以访问 `/dev/kvm`
 
-遵循本文档步骤，应该能在 5 分钟内成功启动 Firecracker microVM！
+---
+
+## 仓库已包含的文件
+
+为了方便快速体验，本仓库已预置以下文件：
+
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `demo/vmlinux-ci` | 28MB | Firecracker CI 内核 |
+| `demo/alpine-rootfs.img` | 16MB | Alpine rootfs 镜像 |
+| `demo/start_microvm.sh` | 1.5KB | 启动脚本 |
+| `demo/QUICKSTART.md` | 本文档 | 快速启动指南 |
+
+**只需下载 Firecracker 二进制（~1MB）即可运行 demo！**
+
+遵循本文档步骤，应该能在 **1 分钟内** 成功启动 Firecracker microVM！
