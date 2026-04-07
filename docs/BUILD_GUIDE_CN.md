@@ -6,14 +6,34 @@
 
 成功构建后会生成以下二进制文件：
 
-| 二进制文件 | 说明 | 大约大小 |
-|-----------|------|---------|
-| `firecracker` | Firecracker VMM 主程序 | ~5MB |
-| `jailer` | 安全隔离包装器（仅 musl 构建） | ~2MB |
-| `seccompiler-bin` | seccomp 规则编译器 | ~2.4MB |
-| `cpu-template-helper` | CPU 模板辅助工具 | ~4MB |
-| `snapshot-editor` | 快照编辑工具 | ~2.5MB |
-| `rebase-snap` | 快照重定位工具 | ~1.8MB |
+### musl 构建（静态链接，生产环境推荐）
+
+| 二进制文件 | 说明 | 大小 | 链接类型 |
+|-----------|------|------|---------|
+| `firecracker` | Firecracker VMM 主程序 | 3.3MB | static-pie |
+| `jailer` | 安全隔离包装器 | 2.1MB | static-pie |
+| `seccompiler-bin` | seccomp 规则编译器 | 1.2MB | static-pie |
+| `cpu-template-helper` | CPU 模板辅助工具 | 2.4MB | static-pie |
+| `snapshot-editor` | 快照编辑工具 | 1.1MB | static-pie |
+| `rebase-snap` | 快照重定位工具 | 488KB | static-pie |
+| `clippy-tracing` | 代码检查工具 | 3.4MB | static-pie |
+
+构建产物路径：`build/cargo_target/x86_64-unknown-linux-musl/release/`
+
+### glibc 构建（动态链接，开发环境）
+
+| 二进制文件 | 说明 | 大小 | 链接类型 |
+|-----------|------|------|---------|
+| `firecracker` | Firecracker VMM 主程序 | 4.7MB | dynamic |
+| `seccompiler-bin` | seccomp 规则编译器 | 2.4MB | dynamic |
+| `cpu-template-helper` | CPU 模板辅助工具 | 4.0MB | dynamic |
+| `snapshot-editor` | 快照编辑工具 | 2.5MB | dynamic |
+| `rebase-snap` | 快照重定位工具 | 1.8MB | dynamic |
+| `clippy-tracing` | 代码检查工具 | 3.5MB | dynamic |
+
+构建产物路径：`build/cargo_target/release/`
+
+**注意**：glibc 构建不会生成 `jailer`，因为 jailer 仅支持 musl 目标。
 
 ---
 
@@ -175,7 +195,7 @@ unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
 
 **症状**：Docker pull `public.ecr.aws/firecracker/fcuvm:v88` 超时或极慢。
 
-**原因**：镜像较大（约 2GB），网络带宽受限。
+**原因**：镜像较大（约 4.7GB），网络带宽受限。
 
 **解决方案**：
 - 使用本地构建替代
@@ -184,13 +204,165 @@ unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
 
 ---
 
+## 方法三：Docker 缓存构建（加速重复构建）
+
+如果需要多次构建 Firecracker，可以使用缓存镜像避免每次重新下载依赖。此方法将 cargo 依赖缓存到镜像中，后续构建时间从 ~10 分钟缩短至 ~5 分钟。
+
+### 3.1 拉取原始镜像
+
+```bash
+# 拉取 Firecracker 官方构建镜像
+docker pull public.ecr.aws/firecracker/fcuvm:v88
+```
+
+镜像大小约 4.7GB，包含完整的 Rust 工具链和构建环境。
+
+### 3.2 创建缓存镜像
+
+首次构建后，将容器状态保存为新镜像：
+
+```bash
+# 1. 首次构建（会下载所有 cargo 依赖）
+docker run -d --name fc-build \
+    --privileged \
+    --workdir /firecracker \
+    --volume /dev:/dev \
+    --volume $(pwd):/firecracker:z \
+    --volume $(pwd)/build/cargo_registry:/usr/local/rust/registry:z \
+    --volume $(pwd)/build/cargo_git_registry:/usr/local/rust/git:z \
+    --tmpfs /srv:exec,dev,size=32G \
+    -v /boot:/boot \
+    --env PYTHONDONTWRITEBYTECODE=1 \
+    public.ecr.aws/firecracker/fcuvm:v88 \
+    bash -c "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY && ./tools/release.sh --libc musl --profile release"
+
+# 2. 等待构建完成
+docker logs -f fc-build
+
+# 3. 将容器提交为缓存镜像
+docker commit fc-build firecracker-build:v88-cached
+
+# 4. 清理容器（镜像已保存）
+docker rm fc-build
+```
+
+### 3.3 使用缓存镜像构建
+
+后续构建直接使用缓存镜像：
+
+```bash
+# 使用缓存镜像构建（约 5 分钟）
+docker run -d --name fc-build \
+    --privileged \
+    --workdir /firecracker \
+    --volume /dev:/dev \
+    --volume $(pwd):/firecracker:z \
+    --volume $(pwd)/build/cargo_registry:/usr/local/rust/registry:z \
+    --volume $(pwd)/build/cargo_git_registry:/usr/local/rust/git:z \
+    --tmpfs /srv:exec,dev,size=32G \
+    -v /boot:/boot \
+    --env PYTHONDONTWRITEBYTECODE=1 \
+    firecracker-build:v88-cached \
+    bash -c "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY && ./tools/release.sh --libc musl --profile release"
+
+# 查看构建日志
+docker logs -f fc-build
+
+# 构建完成后清理容器
+docker rm fc-build
+```
+
+### 3.4 缓存镜像管理
+
+```bash
+# 查看可用镜像
+docker images | grep firecracker
+
+# 镜像列表示例：
+# public.ecr.aws/firecracker/fcuvm:v88          4.68GB  (原始镜像)
+# firecracker-build:v88-cached                  4.68GB  (缓存镜像)
+
+# 导出镜像用于迁移
+docker save firecracker-build:v88-cached | gzip > firecracker-build-v88-cached.tar.gz
+
+# 导入镜像
+docker load < firecracker-build-v88-cached.tar.gz
+
+# 删除缓存镜像（谨慎操作）
+docker rmi firecracker-build:v88-cached
+```
+
+### 3.5 网络配置说明
+
+#### 代理问题
+
+容器通过 devtool 脚本继承主机的代理环境变量。如果主机使用 `127.0.0.1:端口` 作为代理地址，容器内将无法访问（容器的 localhost 与主机不同）。
+
+**解决方案**：
+
+```bash
+# 方案一：构建时清除代理变量（推荐）
+docker run ... bash -c "unset http_proxy https_proxy ... && ./tools/release.sh"
+
+# 方案二：使用 Docker 网桥 IP
+# 容器内访问主机代理：http://172.17.0.1:端口
+# 需要主机代理监听 0.0.0.0 或配置 Docker 网桥
+```
+
+#### 主机代理配置
+
+如果主机有多层代理（如 WSL2 + 主机代理），容器内网络请求流程：
+
+```
+容器 → Docker 网桥 (172.17.0.1) → 主机代理 → 外网
+```
+
+需要确保：
+1. 主机代理允许 Docker 网桥 IP 访问
+2. 或在容器内禁用代理直连外网
+
+### 3.6 缓存目录说明
+
+构建过程中会在宿主机生成缓存目录：
+
+```
+build/
+├── cargo_registry/          # crates.io 依赖缓存 (~191MB)
+├── cargo_git_registry/      # git 依赖缓存 (~1.1MB)
+└── cargo_target/            # 编译产物
+    ├── release/             # glibc 构建
+    └── x86_64-unknown-linux-musl/release/  # musl 构建
+```
+
+**重要**：保留 `cargo_registry` 和 `cargo_git_registry` 目录可加速后续构建。清理 `cargo_target` 目录不会影响缓存。
+
+### 3.7 验证构建产物
+
+```bash
+# 检查 musl 构建（静态链接）
+./build/cargo_target/x86_64-unknown-linux-musl/release/firecracker --version
+# 输出: Firecracker v1.16.0-dev
+
+ldd ./build/cargo_target/x86_64-unknown-linux-musl/release/firecracker
+# 输出: statically linked
+
+# 检查 glibc 构建（动态链接）
+./build/cargo_target/release/firecracker --version
+ldd ./build/cargo_target/release/firecracker
+# 输出: 显示动态库依赖列表
+```
+
+---
+
 ## 构建时间参考
 
-| 构建类型 | 首次构建 |增量构建 | 说明 |
+| 构建类型 | 首次构建 | 增量构建 | 说明 |
 |---------|---------|---------|------|
 | glibc release | ~5-6 分钟 | ~30秒 | 依赖下载+编译 |
 | musl release | ~6-8 分钟 | ~30秒 | musl 工具链编译稍慢 |
-| Docker devtool | ~10-15 分钟 | ~1分钟 | 含镜像拉取时间 |
+| Docker devtool（首次） | ~10-15 分钟 | ~1分钟 | 含镜像拉取+依赖下载 |
+| Docker 缓存镜像 | ~5 分钟 | ~30秒 | 依赖已缓存，仅编译 |
+| Docker 缓存+增量 | ~30秒 | ~30秒 | cargo 编译缓存命中 |
 
 ---
 
@@ -234,20 +406,23 @@ Firecracker 要求特定 Rust 版本：
 
 | 特性 | glibc 构建 | musl 构建 |
 |-----|-----------|----------|
-| 链接方式 | 动态链接 | 静态链接 |
-| 运行依赖 | 需要 glibc | 无依赖 |
+| 链接方式 | 动态链接 | 静态链接 (static-pie) |
+| 运行依赖 | 需要 glibc 动态库 | 无依赖 |
 | jailer | ❌ 不生成 | ✅ 生成 |
-| 二进制大小 | 较小 | 较大 |
+| 二进制大小 | 较大 (firecracker 4.7MB) | 较小 (firecracker 3.3MB) |
 | 适用场景 | 开发环境 | 生产部署 |
 | 启动速度 | 稍慢（动态加载） | 稍快 |
+| 部署难度 | 需确保系统有依赖库 | 直接拷贝即可 |
 
 ---
 
 ## 附录：完整构建脚本
 
+### 本地构建脚本
+
 ```bash
 #!/bin/bash
-# Firecracker 构建脚本
+# Firecracker 本地构建脚本
 
 set -e
 
@@ -286,6 +461,78 @@ echo "musl 构建完成: build/cargo_target/x86_64-unknown-linux-musl/release/"
 # 验证
 echo "=== 构建验证 ==="
 ./build/cargo_target/release/firecracker --version
+./build/cargo_target/x86_64-unknown-linux-musl/release/firecracker --version
+
+echo "=== 构建完成 ==="
+```
+
+### Docker 缓存构建脚本
+
+```bash
+#!/bin/bash
+# Firecracker Docker 缓存构建脚本
+
+set -e
+
+WORKDIR="$(pwd)"
+IMAGE_NAME="firecracker-build:v88-cached"
+BASE_IMAGE="public.ecr.aws/firecracker/fcuvm:v88"
+
+echo "=== Firecracker Docker 缓存构建 ==="
+
+# 检查缓存镜像是否存在
+if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+    echo "缓存镜像不存在，创建中..."
+    
+    # 拉取基础镜像
+    docker pull "$BASE_IMAGE"
+    
+    # 首次构建并创建缓存镜像
+    docker run -d --name fc-build \
+        --privileged \
+        --workdir /firecracker \
+        --volume /dev:/dev \
+        --volume "$WORKDIR:/firecracker:z" \
+        --volume "$WORKDIR/build/cargo_registry:/usr/local/rust/registry:z" \
+        --volume "$WORKDIR/build/cargo_git_registry:/usr/local/rust/git:z" \
+        --tmpfs /srv:exec,dev,size=32G \
+        -v /boot:/boot \
+        --env PYTHONDONTWRITEBYTECODE=1 \
+        "$BASE_IMAGE" \
+        bash -c "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY && ./tools/release.sh --libc musl --profile release"
+    
+    echo "等待构建完成..."
+    docker logs -f fc-build
+    
+    # 创建缓存镜像
+    docker commit fc-build "$IMAGE_NAME"
+    docker rm fc-build
+    echo "缓存镜像已创建: $IMAGE_NAME"
+fi
+
+# 使用缓存镜像构建
+echo "使用缓存镜像构建..."
+docker run -d --name fc-build \
+    --privileged \
+    --workdir /firecracker \
+    --volume /dev:/dev \
+    --volume "$WORKDIR:/firecracker:z" \
+    --volume "$WORKDIR/build/cargo_registry:/usr/local/rust/registry:z" \
+    --volume "$WORKDIR/build/cargo_git_registry:/usr/local/rust/git:z" \
+    --tmpfs /srv:exec,dev,size=32G \
+    -v /boot:/boot \
+    --env PYTHONDONTWRITEBYTECODE=1 \
+    "$IMAGE_NAME" \
+    bash -c "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY && ./tools/release.sh --libc musl --profile release"
+
+echo "等待构建完成..."
+docker logs -f fc-build
+
+# 清理容器
+docker rm fc-build
+
+# 验证
+echo "=== 构建验证 ==="
 ./build/cargo_target/x86_64-unknown-linux-musl/release/firecracker --version
 
 echo "=== 构建完成 ==="
